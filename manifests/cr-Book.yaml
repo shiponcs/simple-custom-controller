@@ -1,0 +1,7 @@
+apiVersion: simplecustomcontroller.crd.com/v1
+kind: Book
+metadata:
+  name: example-book
+spec:
+  deploymentName: example-book
+  replicas: 1
