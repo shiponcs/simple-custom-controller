@@ -1,10 +1,13 @@
 package main
 
 import (
-	"context"
-	"fmt"
-	clientset "github.com/shiponcs/simple-custom-controller/pkg/generated/clientset/versioned"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	//"context"
+	//"fmt"
+	//clientset "github.com/shiponcs/simple-custom-controller/pkg/generated/clientset/versioned"
+	"github.com/shiponcs/simple-custom-controller/utils"
+	apiextensionsclientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
+	//metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	//"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/homedir"
 )
@@ -14,15 +17,10 @@ func main() {
 	if err != nil {
 		panic(err.Error())
 	}
-	bookClient, err := clientset.NewForConfig(cfg)
-	if err != nil {
+	//bookClient, err := clientset.NewForConfig(cfg)
+	//kubeClient, err := kubernetes.NewForConfig(cfg)
+	extensionsClient, err := apiextensionsclientset.NewForConfig(cfg)
+	if err := utils.CreateCRD(extensionsClient); err != nil {
 		panic(err.Error())
 	}
-
-	book, err := bookClient.SimplecustomcontrollerV1().Books("default").Get(context.TODO(), "example-book", metav1.GetOptions{})
-	if err != nil {
-		panic(err.Error())
-	}
-	rep := book.Spec.Replicas
-	fmt.Printf("The replica number is %d\n", *rep)
 }
