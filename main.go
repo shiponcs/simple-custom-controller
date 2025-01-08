@@ -63,7 +63,7 @@ func main() {
 	kubeInformerFactory.Start(ctx.Done())
 	bookInformerFactory.Start(ctx.Done())
 
-	if controller.Run(ctx, 2); err != nil {
+	if err := controller.Run(ctx, 2); err != nil {
 		logger.Error(err, "Error running controller")
 		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
 	}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	bookv1 "github.com/shiponcs/simple-custom-controller/pkg/apis/simplecustomcontroller/v1"
 	clientset "github.com/shiponcs/simple-custom-controller/pkg/generated/clientset/versioned"
+	samplescheme "github.com/shiponcs/simple-custom-controller/pkg/generated/clientset/versioned/scheme"
 	informers "github.com/shiponcs/simple-custom-controller/pkg/generated/informers/externalversions/simplecustomcontroller/v1"
 	listers "github.com/shiponcs/simple-custom-controller/pkg/generated/listers/simplecustomcontroller/v1"
 	"golang.org/x/time/rate"
@@ -12,6 +13,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	appsinformers "k8s.io/client-go/informers/apps/v1"
@@ -23,25 +25,24 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
-	samplescheme "k8s.io/sample-controller/pkg/generated/clientset/versioned/scheme"
 	"time"
 )
 
 const controllerAgentName = "simple-custom-controller"
 
 const (
-	// SuccessSynced is used as part of the Event 'reason' when a Foo is synced
+	// SuccessSynced is used as part of the Event 'reason' when a Book is synced
 	SuccessSynced = "Synced"
-	// ErrResourceExists is used as part of the Event 'reason' when a Foo fails
+	// ErrResourceExists is used as part of the Event 'reason' when a book fails
 	// to sync due to a Deployment of the same name already existing.
 	ErrResourceExists = "ErrResourceExists"
 
 	// MessageResourceExists is the message used for Events when a resource
 	// fails to sync due to a Deployment already existing
-	MessageResourceExists = "Resource %q already exists and is not managed by Foo"
-	// MessageResourceSynced is the message used for an Event fired when a Foo
+	MessageResourceExists = "Resource %q already exists and is not managed by book"
+	// MessageResourceSynced is the message used for an Event fired when a book
 	// is synced successfully
-	MessageResourceSynced = "Foo synced successfully"
+	MessageResourceSynced = "book synced successfully"
 	// FieldManager distinguishes this controller from other things writing to API objects
 	FieldManager = controllerAgentName
 )
@@ -104,7 +105,7 @@ func NewController(
 	}
 
 	logger.Info("Setting up event handlers")
-	// Set up an event handler for when Foo resources change
+	// Set up an event handler for when book resources change
 	BookInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: controller.enqueueBook,
 		UpdateFunc: func(old, new interface{}) {
@@ -113,7 +114,7 @@ func NewController(
 	})
 	// Set up an event handler for when Deployment resources change. This
 	// handler will lookup the owner of the given Deployment, and if it is
-	// owned by a Foo resource then the handler will enqueue that Foo resource for
+	// owned by a book resource then the handler will enqueue that book resource for
 	// processing. This way, we don't need to implement custom logic for
 	// handling Deployment resources. More info on this pattern:
 	// https://github.com/kubernetes/community/blob/8cafef897a22026d42f5e5bb3f104febe7e29830/contributors/devel/controllers.md
@@ -145,7 +146,7 @@ func (c *Controller) Run(ctx context.Context, workers int) error {
 	logger := klog.FromContext(ctx)
 
 	// Start the informer factories to begin populating the informer caches
-	logger.Info("Starting Foo controller")
+	logger.Info("Starting book controller")
 
 	// Wait for the caches to be synced before starting workers
 	logger.Info("Waiting for informer caches to sync")
@@ -155,7 +156,7 @@ func (c *Controller) Run(ctx context.Context, workers int) error {
 	}
 
 	logger.Info("Starting workers", "count", workers)
-	// Launch two workers to process Foo resources
+	// Launch two workers to process book resources
 	for i := 0; i < workers; i++ {
 		go wait.UntilWithContext(ctx, c.runWorker, time.Second)
 	}
@@ -216,15 +217,15 @@ func (c *Controller) processNextWorkItem(ctx context.Context) bool {
 }
 
 // syncHandler compares the actual state with the desired, and attempts to
-// converge the two. It then updates the Status block of the Foo resource
+// converge the two. It then updates the Status block of the book resource
 // with the current status of the resource.
 func (c *Controller) syncHandler(ctx context.Context, objectRef cache.ObjectName) error {
 	logger := klog.LoggerWithValues(klog.FromContext(ctx), "objectRef", objectRef)
 
-	// Get the Foo resource with this namespace/name
+	// Get the book resource with this namespace/name
 	book, err := c.bookLister.Books(objectRef.Namespace).Get(objectRef.Name)
 	if err != nil {
-		// The Foo resource may no longer exist, in which case we stop
+		// The book resource may no longer exist, in which case we stop
 		// processing.
 		if errors.IsNotFound(err) {
 			utilruntime.HandleErrorWithContext(ctx, err, "Book referenced by item in work queue no longer exists", "objectReference", objectRef)
@@ -243,7 +244,7 @@ func (c *Controller) syncHandler(ctx context.Context, objectRef cache.ObjectName
 		return nil
 	}
 
-	// Get the deployment with the name specified in Foo.spec
+	// Get the deployment with the name specified in book.spec
 	deployment, err := c.deploymentsLister.Deployments(book.Namespace).Get(deploymentName)
 	// If the resource doesn't exist, we'll create it
 	if errors.IsNotFound(err) {
@@ -257,7 +258,7 @@ func (c *Controller) syncHandler(ctx context.Context, objectRef cache.ObjectName
 		return err
 	}
 
-	// If the Deployment is not controlled by this Foo resource, we should log
+	// If the Deployment is not controlled by this book resource, we should log
 	// a warning to the event recorder and return error msg.
 	if !metav1.IsControlledBy(deployment, book) {
 		msg := fmt.Sprintf(MessageResourceExists, deployment.Name)
@@ -265,10 +266,11 @@ func (c *Controller) syncHandler(ctx context.Context, objectRef cache.ObjectName
 		return fmt.Errorf("%s", msg)
 	}
 
-	// If this number of the replicas on the Foo resource is specified, and the
+	// If this number of the replicas on the book resource is specified, and the
 	// number does not equal the current desired replicas on the Deployment, we
 	// should update the Deployment resource.
-	if book.Spec.Replicas != nil && *book.Spec.Replicas != *deployment.Spec.Replicas {
+	// TODO: need to add more logic to make deployment update decision
+	if (book.Spec.Replicas != nil && *book.Spec.Replicas != *deployment.Spec.Replicas) || (book.Spec.Container.Image != "" && book.Spec.Container.Image != deployment.Spec.Template.Spec.Containers[0].Image) {
 		logger.V(4).Info("Update deployment resource", "currentReplicas", *deployment.Spec.Replicas, "desiredReplicas", *book.Spec.Replicas)
 		deployment, err = c.kubeclientset.AppsV1().Deployments(book.Namespace).Update(ctx, newDeployment(book), metav1.UpdateOptions{FieldManager: FieldManager})
 	}
@@ -280,15 +282,30 @@ func (c *Controller) syncHandler(ctx context.Context, objectRef cache.ObjectName
 		return err
 	}
 
-	// Finally, we update the status block of the Foo resource to reflect the
+	// Finally, we update the status block of the book resource to reflect the
 	// current state of the world
 	err = c.updateBookStatus(ctx, book, deployment)
 	if err != nil {
 		return err
 	}
 
+	svcName := book.Spec.DeploymentName + "service"
+	_, err = c.kubeclientset.CoreV1().Services(objectRef.Namespace).Get(ctx, svcName, metav1.GetOptions{})
+	if errors.IsNotFound(err) {
+		_, err := c.kubeclientset.CoreV1().Services(objectRef.Namespace).Create(ctx, newService(book), metav1.CreateOptions{})
+		if err != nil {
+			return err
+		}
+	} else if err != nil {
+		return err
+	}
+	// TODO: need to add some checks before updating the service
+	_, err = c.kubeclientset.CoreV1().Services(objectRef.Namespace).Update(ctx, newService(book), metav1.UpdateOptions{})
+	if err != nil {
+		return err
+	}
+
 	c.recorder.Event(book, corev1.EventTypeNormal, SuccessSynced, MessageResourceSynced)
-	fmt.Println("here ehehrkf")
 	return nil
 }
 
@@ -308,22 +325,20 @@ func (c *Controller) updateBookStatus(ctx context.Context, book *bookv1.Book, de
 	// NEVER modify objects from the store. It's a read-only, local cache.
 	// You can use DeepCopy() to make a deep copy of original object and modify this copy
 	// Or create a copy manually for better performance
-	fooCopy := book.DeepCopy()
-	fooCopy.Status.AvailableReplicas = deployment.Status.AvailableReplicas
+	bookCopy := book.DeepCopy()
+	bookCopy.Status.AvailableReplicas = deployment.Status.AvailableReplicas
 	// If the CustomResourceSubresources feature gate is not enabled,
-	// we must use Update instead of UpdateStatus to update the Status block of the Foo resource.
+	// we must use Update instead of UpdateStatus to update the Status block of the book resource.
 	// UpdateStatus will not allow changes to the Spec of the resource,
 	// which is ideal for ensuring nothing other than resource status has been updated.
-	newObj, err := c.sampleclientset.SimplecustomcontrollerV1().Books(book.Namespace).UpdateStatus(ctx, fooCopy, metav1.UpdateOptions{FieldManager: FieldManager})
-	fmt.Println("******** updateStatus called and the error", err)
-	fmt.Println("******** updateStatus", newObj.Status.AvailableReplicas)
+	_, err := c.sampleclientset.SimplecustomcontrollerV1().Books(book.Namespace).UpdateStatus(ctx, bookCopy, metav1.UpdateOptions{FieldManager: FieldManager})
 	return err
 }
 
 // handleObject will take any resource implementing metav1.Object and attempt
-// to find the Foo resource that 'owns' it. It does this by looking at the
+// to find the book resource that 'owns' it. It does this by looking at the
 // objects metadata.ownerReferences field for an appropriate OwnerReference.
-// It then enqueues that Foo resource to be processed. If the object does not
+// It then enqueues that book resource to be processed. If the object does not
 // have an appropriate OwnerReference, it will simply be skipped.
 func (c *Controller) handleObject(obj interface{}) {
 	var object metav1.Object
@@ -348,26 +363,26 @@ func (c *Controller) handleObject(obj interface{}) {
 	}
 	logger.V(4).Info("Processing object", "object", klog.KObj(object))
 	if ownerRef := metav1.GetControllerOf(object); ownerRef != nil {
-		// If this object is not owned by a Foo, we should not do anything more
+		// If this object is not owned by a book, we should not do anything more
 		// with it.
-		if ownerRef.Kind != "Foo" {
+		if ownerRef.Kind != "book" {
 			return
 		}
 
-		foo, err := c.bookLister.Books(object.GetNamespace()).Get(ownerRef.Name)
+		book, err := c.bookLister.Books(object.GetNamespace()).Get(ownerRef.Name)
 		if err != nil {
-			logger.V(4).Info("Ignore orphaned object", "object", klog.KObj(object), "foo", ownerRef.Name)
+			logger.V(4).Info("Ignore orphaned object", "object", klog.KObj(object), "book", ownerRef.Name)
 			return
 		}
 
-		c.enqueueBook(foo)
+		c.enqueueBook(book)
 		return
 	}
 }
 
-// newDeployment creates a new Deployment for a Foo resource. It also sets
+// newDeployment creates a new Deployment for a book resource. It also sets
 // the appropriate OwnerReferences on the resource so handleObject can discover
-// the Foo resource that 'owns' it.
+// the book resource that 'owns' it.
 func newDeployment(book *bookv1.Book) *appsv1.Deployment {
 	labels := map[string]string{
 		"app":        "book-server",
@@ -398,4 +413,34 @@ func newDeployment(book *bookv1.Book) *appsv1.Deployment {
 			},
 		},
 	}
+}
+
+func newService(book *bookv1.Book) *corev1.Service {
+	labels := map[string]string{
+		"app":        "book-server",
+		"controller": book.Name,
+	}
+	return &corev1.Service{
+		TypeMeta: metav1.TypeMeta{
+			Kind: "Service",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: book.Spec.DeploymentName + "service",
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(book, bookv1.SchemeGroupVersion.WithKind("Book")),
+			},
+		},
+		Spec: corev1.ServiceSpec{
+			Type:     corev1.ServiceTypeNodePort,
+			Selector: labels,
+			Ports: []corev1.ServicePort{
+				{
+					Port:       book.Spec.Container.Ports[0].ContainerPort,
+					TargetPort: intstr.FromInt32(book.Spec.Container.Ports[0].ContainerPort),
+					NodePort:   30009,
+				},
+			},
+		},
+	}
+
 }
