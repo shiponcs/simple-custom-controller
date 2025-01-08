@@ -5,3 +5,9 @@ metadata:
 spec:
   deploymentName: example-book
   replicas: 1
+  container:
+    name: book-store
+    image: shiponcs/book-store-api-server
+    ports:
+      - containerPort: 8080
+

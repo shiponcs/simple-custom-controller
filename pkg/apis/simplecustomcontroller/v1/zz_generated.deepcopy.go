@@ -94,6 +94,7 @@ func (in *BookSpec) DeepCopyInto(out *BookSpec) {
 		*out = new(int32)
 		**out = **in
 	}
+	in.Container.DeepCopyInto(&out.Container)
 	return
 }
 
