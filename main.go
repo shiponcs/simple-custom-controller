@@ -58,6 +58,7 @@ func main() {
 
 	controller := controller.NewController(ctx, kubeClient, bookClient,
 		kubeInformerFactory.Apps().V1().Deployments(),
+		kubeInformerFactory.Core().V1().Services(),
 		bookInformerFactory.Simplecustomcontroller().V1().Books())
 
 	kubeInformerFactory.Start(ctx.Done())

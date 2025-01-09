@@ -17,10 +17,12 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	appsinformers "k8s.io/client-go/informers/apps/v1"
+	coreinformer "k8s.io/client-go/informers/core/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	appslisters "k8s.io/client-go/listers/apps/v1"
+	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
@@ -57,7 +59,8 @@ type Controller struct {
 	deploymentsSynced cache.InformerSynced
 	bookLister        listers.BookLister
 	bookSynced        cache.InformerSynced
-
+	serviceLister     corelisters.ServiceLister
+	serviceSynced     cache.InformerSynced
 	// workqueue is a rate limited work queue. This is used to queue work to be
 	// processed instead of performing it as soon as a change happens. This
 	// means we can ensure we only process a fixed amount of resources at a
@@ -69,12 +72,13 @@ type Controller struct {
 	recorder record.EventRecorder
 }
 
-// NewController returns a new sample controller
+// NewController returns a new controller
 func NewController(
 	ctx context.Context,
 	kubeclientset kubernetes.Interface,
 	Bookclientset clientset.Interface,
 	deploymentInformer appsinformers.DeploymentInformer,
+	serviceInformer coreinformer.ServiceInformer,
 	BookInformer informers.BookInformer) *Controller {
 	logger := klog.FromContext(ctx)
 
@@ -100,6 +104,8 @@ func NewController(
 		deploymentsSynced: deploymentInformer.Informer().HasSynced,
 		bookLister:        BookInformer.Lister(),
 		bookSynced:        BookInformer.Informer().HasSynced,
+		serviceLister:     serviceInformer.Lister(),
+		serviceSynced:     serviceInformer.Informer().HasSynced,
 		workqueue:         workqueue.NewTypedRateLimitingQueue(ratelimiter),
 		recorder:          recorder,
 	}
@@ -132,6 +138,19 @@ func NewController(
 		},
 		DeleteFunc: controller.handleObject,
 	})
+	// setup event handler for service just like how we set for Deployment
+	serviceInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: controller.handleObject,
+		UpdateFunc: func(old, new interface{}) {
+			newService := new.(*corev1.Service)
+			oldService := old.(*corev1.Service)
+			if newService.ResourceVersion == oldService.ResourceVersion {
+				return
+			}
+			controller.handleObject(new)
+		},
+		DeleteFunc: controller.handleObject,
+	})
 
 	return controller
 }
@@ -151,7 +170,7 @@ func (c *Controller) Run(ctx context.Context, workers int) error {
 	// Wait for the caches to be synced before starting workers
 	logger.Info("Waiting for informer caches to sync")
 
-	if ok := cache.WaitForCacheSync(ctx.Done(), c.deploymentsSynced, c.bookSynced); !ok {
+	if ok := cache.WaitForCacheSync(ctx.Done(), c.deploymentsSynced, c.bookSynced, c.serviceSynced); !ok {
 		return fmt.Errorf("failed to wait for caches to sync")
 	}
 
@@ -270,7 +289,9 @@ func (c *Controller) syncHandler(ctx context.Context, objectRef cache.ObjectName
 	// number does not equal the current desired replicas on the Deployment, we
 	// should update the Deployment resource.
 	// TODO: need to add more logic to make deployment update decision
-	if (book.Spec.Replicas != nil && *book.Spec.Replicas != *deployment.Spec.Replicas) || (book.Spec.Container.Image != "" && book.Spec.Container.Image != deployment.Spec.Template.Spec.Containers[0].Image) {
+	if (book.Spec.Replicas != nil && *book.Spec.Replicas != *deployment.Spec.Replicas) ||
+		(book.Spec.Container.Image != "" && book.Spec.Container.Image != deployment.Spec.Template.Spec.Containers[0].Image ||
+			(book.Spec.Container.Ports[0].ContainerPort != deployment.Spec.Template.Spec.Containers[0].Ports[0].ContainerPort)) {
 		logger.V(4).Info("Update deployment resource", "currentReplicas", *deployment.Spec.Replicas, "desiredReplicas", *book.Spec.Replicas)
 		deployment, err = c.kubeclientset.AppsV1().Deployments(book.Namespace).Update(ctx, newDeployment(book), metav1.UpdateOptions{FieldManager: FieldManager})
 	}
@@ -290,7 +311,7 @@ func (c *Controller) syncHandler(ctx context.Context, objectRef cache.ObjectName
 	}
 
 	svcName := book.Spec.DeploymentName + "service"
-	_, err = c.kubeclientset.CoreV1().Services(objectRef.Namespace).Get(ctx, svcName, metav1.GetOptions{})
+	_, err = c.serviceLister.Services(objectRef.Namespace).Get(svcName)
 	if errors.IsNotFound(err) {
 		_, err := c.kubeclientset.CoreV1().Services(objectRef.Namespace).Create(ctx, newService(book), metav1.CreateOptions{})
 		if err != nil {
@@ -365,16 +386,14 @@ func (c *Controller) handleObject(obj interface{}) {
 	if ownerRef := metav1.GetControllerOf(object); ownerRef != nil {
 		// If this object is not owned by a book, we should not do anything more
 		// with it.
-		if ownerRef.Kind != "book" {
+		if ownerRef.Kind != "Book" {
 			return
 		}
-
 		book, err := c.bookLister.Books(object.GetNamespace()).Get(ownerRef.Name)
 		if err != nil {
 			logger.V(4).Info("Ignore orphaned object", "object", klog.KObj(object), "book", ownerRef.Name)
 			return
 		}
-
 		c.enqueueBook(book)
 		return
 	}
