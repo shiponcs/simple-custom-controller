@@ -27,6 +27,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
+	"os"
 	"time"
 )
 
@@ -303,13 +304,6 @@ func (c *Controller) syncHandler(ctx context.Context, objectRef cache.ObjectName
 		return err
 	}
 
-	// Finally, we update the status block of the book resource to reflect the
-	// current state of the world
-	err = c.updateBookStatus(ctx, book, deployment)
-	if err != nil {
-		return err
-	}
-
 	svcName := book.Spec.DeploymentName + "service"
 	_, err = c.serviceLister.Services(objectRef.Namespace).Get(svcName)
 	if errors.IsNotFound(err) {
@@ -322,6 +316,64 @@ func (c *Controller) syncHandler(ctx context.Context, objectRef cache.ObjectName
 	}
 	// TODO: need to add some checks before updating the service
 	_, err = c.kubeclientset.CoreV1().Services(objectRef.Namespace).Update(ctx, newService(book), metav1.UpdateOptions{})
+	if err != nil {
+		return err
+	}
+
+	envoyConfigMapName := book.Spec.DeploymentName + "-envoy-config"
+	envoyConfigMap, err := c.kubeclientset.CoreV1().ConfigMaps(book.Namespace).Get(ctx, envoyConfigMapName, metav1.GetOptions{})
+	if errors.IsNotFound(err) {
+		envoyConfigMap, err = c.kubeclientset.CoreV1().ConfigMaps(book.Namespace).Create(ctx, newEnvoyConfigMap(book), metav1.CreateOptions{FieldManager: FieldManager})
+	}
+
+	if err != nil {
+		return err
+	}
+
+	if !metav1.IsControlledBy(envoyConfigMap, book) {
+		msg := fmt.Sprintf(MessageResourceExists, deployment.Name)
+		c.recorder.Event(book, corev1.EventTypeWarning, ErrResourceExists, msg)
+		return fmt.Errorf("%s", msg)
+	}
+
+	envoyDeploymentName := book.Spec.DeploymentName + "-envoy"
+
+	envoyDeployment, err := c.deploymentsLister.Deployments(book.Namespace).Get(envoyDeploymentName)
+	if errors.IsNotFound(err) {
+		envoyDeployment, err = c.kubeclientset.AppsV1().Deployments(book.Namespace).Create(ctx, newEnvoyDeployment(book), metav1.CreateOptions{FieldManager: FieldManager})
+	}
+	// TODO: need to decide when we may need to update Envoy Deployment
+
+	if err != nil {
+		return err
+	}
+
+	if !metav1.IsControlledBy(envoyDeployment, book) {
+		msg := fmt.Sprintf(MessageResourceExists, deployment.Name)
+		c.recorder.Event(book, corev1.EventTypeWarning, ErrResourceExists, msg)
+		return fmt.Errorf("%s", msg)
+	}
+
+	envoySvcName := book.Spec.DeploymentName + "-envoy-service"
+	_, err = c.serviceLister.Services(objectRef.Namespace).Get(envoySvcName)
+	if errors.IsNotFound(err) {
+		_, err := c.kubeclientset.CoreV1().Services(objectRef.Namespace).Create(ctx, newEnvoyService(book), metav1.CreateOptions{})
+		if err != nil {
+			return err
+		}
+	} else if err != nil {
+		return err
+	}
+	// TODO: need to add some checks before updating the service
+	_, err = c.kubeclientset.CoreV1().Services(objectRef.Namespace).Update(ctx, newEnvoyService(book), metav1.UpdateOptions{})
+
+	if err != nil {
+		return err
+	}
+
+	// Finally, we update the status block of the book resource to reflect the
+	// current state of the world
+	err = c.updateBookStatus(ctx, book, deployment)
 	if err != nil {
 		return err
 	}
@@ -434,6 +486,69 @@ func newDeployment(book *bookv1.Book) *appsv1.Deployment {
 	}
 }
 
+func newEnvoyDeployment(book *bookv1.Book) *appsv1.Deployment {
+	labels := map[string]string{
+		"app":        "envoy",
+		"controller": book.Name,
+	}
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      book.Spec.DeploymentName + "-envoy",
+			Namespace: book.Namespace,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(book, bookv1.SchemeGroupVersion.WithKind("Book")),
+			},
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: book.Spec.Replicas,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: labels,
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: labels,
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  book.Spec.DeploymentName + "-envoy",
+							Image: "envoyproxy/envoy:v1.32.3",
+							Ports: []corev1.ContainerPort{
+								{
+									Name:          "http",
+									ContainerPort: 1999,
+								},
+								{
+									Name:          "admin",
+									ContainerPort: 8001,
+								},
+							},
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									Name:      "envoy-config",
+									MountPath: "/etc/envoy",
+								},
+							},
+						},
+					},
+					Volumes: []corev1.Volume{
+						{
+							Name: "envoy-config",
+							VolumeSource: corev1.VolumeSource{
+								ConfigMap: &corev1.ConfigMapVolumeSource{
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: book.Spec.DeploymentName + "-envoy-config",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
 func newService(book *bookv1.Book) *corev1.Service {
 	labels := map[string]string{
 		"app":        "book-server",
@@ -461,5 +576,58 @@ func newService(book *bookv1.Book) *corev1.Service {
 			},
 		},
 	}
+}
 
+func newEnvoyService(book *bookv1.Book) *corev1.Service {
+	labels := map[string]string{
+		"app":        "envoy",
+		"controller": book.Name,
+	}
+	return &corev1.Service{
+		TypeMeta: metav1.TypeMeta{
+			Kind: "Service",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: book.Spec.DeploymentName + "-envoy-service",
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(book, bookv1.SchemeGroupVersion.WithKind("Book")),
+			},
+		},
+		Spec: corev1.ServiceSpec{
+			Type:     corev1.ServiceTypeLoadBalancer,
+			Selector: labels,
+			Ports: []corev1.ServicePort{
+				{
+					Port:       1999,
+					TargetPort: intstr.FromInt32(1999),
+				},
+			},
+		},
+	}
+}
+
+func newEnvoyConfigMap(book *bookv1.Book) *corev1.ConfigMap {
+	//labels := map[string]string{
+	//	"app":        "book-server",
+	//	"controller": book.Name,
+	//}
+	wd, _ := os.Getwd()
+	envoyConfig, err := os.ReadFile(wd + "/manifests/envoy.yaml")
+	if err != nil {
+		panic(err.Error())
+	}
+	return &corev1.ConfigMap{
+		TypeMeta: metav1.TypeMeta{
+			Kind: "ConfigMap",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: book.Spec.DeploymentName + "-envoy-config",
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(book, bookv1.SchemeGroupVersion.WithKind("Book")),
+			},
+		},
+		Data: map[string]string{
+			"envoy.yaml": string(envoyConfig),
+		},
+	}
 }
