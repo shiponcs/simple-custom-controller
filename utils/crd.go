@@ -9,6 +9,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"os"
 	"sigs.k8s.io/yaml"
+	"time"
 )
 
 func CreateCRD(Clientset *apiextensionsclientset.Clientset) error {
@@ -48,4 +49,26 @@ func CreateCRD(Clientset *apiextensionsclientset.Clientset) error {
 		return err
 	}
 	return nil
+}
+
+func WaitForCRDEstablishment(client *apiextensionsclientset.Clientset, crdName string) error {
+	timeout := time.After(30 * time.Second)
+	ticker := time.Tick(500 * time.Millisecond)
+
+	for {
+		select {
+		case <-timeout:
+			return fmt.Errorf("timed out waiting for CRD %s to be established", crdName)
+		case <-ticker:
+			crd, err := client.ApiextensionsV1().CustomResourceDefinitions().Get(context.TODO(), crdName, metav1.GetOptions{})
+			if err != nil {
+				return err
+			}
+			for _, condition := range crd.Status.Conditions {
+				if condition.Type == apiextensionsv1.Established && condition.Status == apiextensionsv1.ConditionTrue {
+					return nil
+				}
+			}
+		}
+	}
 }

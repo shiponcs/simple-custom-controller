@@ -1,0 +1,20 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: simple-custom-controller
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: simple-custom-controller
+  template:
+    metadata:
+      labels:
+        app: simple-custom-controller
+    spec:
+      serviceAccountName: simple-custom-controller-sa
+      containers:
+        - name: your-controller
+          image: shiponcs/simple-custom-controller
+          imagePullPolicy: Always
