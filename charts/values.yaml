@@ -1,0 +1,2 @@
+#fullnameOverride: scc-v
+image: shiponcs/simple-custom-controller:latest

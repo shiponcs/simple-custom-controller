@@ -60,3 +60,8 @@ If we create a Custom Resource of `Kind: Book`, the controller will take the fol
 
 ### Relevant
 The controller deploys this- [shiponcs/golang-rest-api-server](https://github.com/shiponcs/golang-rest-api-server/).
+
+### Install using Helm
+```bash
+helm install scc charts/ --namespace scc --create-namespace --set fullnameOverride=book-controller
+```
