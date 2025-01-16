@@ -24,8 +24,6 @@ import (
 	//"context"
 	//"fmt"
 	bookInformers "github.com/shiponcs/simple-custom-controller/pkg/generated/informers/externalversions"
-	"github.com/shiponcs/simple-custom-controller/utils"
-	apiextensionsclientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	kubeinformers "k8s.io/client-go/informers"
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -54,18 +52,6 @@ func main() {
 		if err != nil {
 			logger.V(4).Error(err, "Error running in out-cluster mode")
 		}
-	}
-
-	// create the CRD from the yaml file
-	extensionsClient, err := apiextensionsclientset.NewForConfig(cfg)
-	if err := utils.CreateCRD(extensionsClient); err != nil {
-		panic(err.Error())
-	}
-
-	// wait for the crd creation to complete
-	if err := utils.WaitForCRDEstablishment(extensionsClient, "books.simplecustomcontroller.crd.com"); err != nil {
-		panic(err.Error())
-		return
 	}
 
 	kubeClient, err := kubernetes.NewForConfig(cfg)
